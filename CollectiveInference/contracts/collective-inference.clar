@@ -81,3 +81,110 @@
   { request-id: uint, rater: principal }
   { rating: uint, comment: (optional (string-ascii 100)) }
 )
+
+;; Initialize with supported model types
+(define-public (initialize)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (map-set model-types { model-type: "llm-small" } 
+      { min-gpu-power: u4, base-rate: u100, complexity-multiplier: u1, enabled: true })
+    (map-set model-types { model-type: "llm-large" } 
+      { min-gpu-power: u8, base-rate: u300, complexity-multiplier: u2, enabled: true })
+    (map-set model-types { model-type: "image-generation" } 
+      { min-gpu-power: u6, base-rate: u200, complexity-multiplier: u3, enabled: true })
+    (map-set model-types { model-type: "computer-vision" } 
+      { min-gpu-power: u4, base-rate: u150, complexity-multiplier: u2, enabled: true })
+    (map-set model-types { model-type: "speech-synthesis" } 
+      { min-gpu-power: u2, base-rate: u80, complexity-multiplier: u1, enabled: true })
+    (map-set model-types { model-type: "video-processing" } 
+      { min-gpu-power: u12, base-rate: u500, complexity-multiplier: u4, enabled: true })
+    (ok true)
+  )
+)
+
+;; Register as compute provider with staking
+(define-public (register-provider 
+  (gpu-power uint) 
+  (hourly-rate uint) 
+  (specializations (list 5 (string-ascii 50))))
+  (let
+    (
+      (existing-provider (map-get? compute-providers { provider: tx-sender }))
+      (stake-amount (var-get min-stake-amount))
+    )
+    ;; Require minimum stake
+    (try! (stx-transfer? stake-amount tx-sender (as-contract tx-sender)))
+    
+    (if (is-some existing-provider)
+      (map-set compute-providers
+        { provider: tx-sender }
+        (merge (unwrap-panic existing-provider) { 
+          gpu-power: gpu-power, 
+          hourly-rate: hourly-rate,
+          active: true,
+          specializations: specializations,
+          stake-amount: (+ (get stake-amount (unwrap-panic existing-provider)) stake-amount),
+          last-activity: block-height
+        })
+      )
+      (begin
+        (map-set compute-providers
+          { provider: tx-sender }
+          {
+            gpu-power: gpu-power,
+            hourly-rate: hourly-rate,
+            active: true,
+            total-earnings: u0,
+            completed-jobs: u0,
+            reputation-score: u100,
+            stake-amount: stake-amount,
+            last-activity: block-height,
+            specializations: specializations,
+            uptime-score: u100
+          }
+        )
+        (var-set total-providers (+ (var-get total-providers) u1))
+      )
+    )
+    (ok true)
+  )
+)
+
+;; Update provider configuration
+(define-public (update-provider-config
+  (gpu-power uint)
+  (hourly-rate uint)
+  (specializations (list 5 (string-ascii 50))))
+  (let
+    (
+      (provider (unwrap! (map-get? compute-providers { provider: tx-sender }) ERR-PROVIDER-NOT-FOUND))
+    )
+    (map-set compute-providers
+      { provider: tx-sender }
+      (merge provider {
+        gpu-power: gpu-power,
+        hourly-rate: hourly-rate,
+        specializations: specializations,
+        last-activity: block-height
+      })
+    )
+    (ok true)
+  )
+)
+
+;; Increase provider stake
+(define-public (increase-stake (amount uint))
+  (let
+    (
+      (provider (unwrap! (map-get? compute-providers { provider: tx-sender }) ERR-PROVIDER-NOT-FOUND))
+    )
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (map-set compute-providers
+      { provider: tx-sender }
+      (merge provider {
+        stake-amount: (+ (get stake-amount provider) amount)
+      })
+    )
+    (ok true)
+  )
+)
