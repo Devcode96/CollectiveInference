@@ -445,3 +445,130 @@
     (ok true)
   )
 )
+
+;; Toggle provider availability
+(define-public (toggle-availability)
+  (let
+    (
+      (provider (unwrap! (map-get? compute-providers { provider: tx-sender }) ERR-PROVIDER-NOT-FOUND))
+    )
+    (map-set compute-providers
+      { provider: tx-sender }
+      (merge provider { 
+        active: (not (get active provider)),
+        last-activity: block-height
+      })
+    )
+    (ok (not (get active provider)))
+  )
+)
+
+;; Withdraw stake (with cooldown)
+(define-public (withdraw-stake (amount uint))
+  (let
+    (
+      (provider (unwrap! (map-get? compute-providers { provider: tx-sender }) ERR-PROVIDER-NOT-FOUND))
+      (cooldown-end (+ (get last-activity provider) (var-get cooldown-period)))
+    )
+    (asserts! (not (get active provider)) ERR-INVALID-STATUS)
+    (asserts! (>= block-height cooldown-end) ERR-COOLDOWN-ACTIVE)
+    (asserts! (>= (get stake-amount provider) amount) ERR-INSUFFICIENT-FUNDS)
+    
+    (try! (as-contract (stx-transfer? amount tx-sender tx-sender)))
+    
+    (map-set compute-providers
+      { provider: tx-sender }
+      (merge provider {
+        stake-amount: (- (get stake-amount provider) amount)
+      })
+    )
+    
+    (ok true)
+  )
+)
+
+;; Admin function to update platform parameters
+(define-public (update-platform-params 
+  (fee-rate uint) 
+  (min-stake uint) 
+  (cooldown uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (asserts! (<= fee-rate u10) ERR-INVALID-STATUS) ;; Max 10% fee
+    (var-set platform-fee-rate fee-rate)
+    (var-set min-stake-amount min-stake)
+    (var-set cooldown-period cooldown)
+    (ok true)
+  )
+)
+
+;; Emergency pause (admin only)
+(define-public (emergency-pause)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    ;; Implementation would disable all functions except admin ones
+    (ok true)
+  )
+)
+
+;; Read-only functions
+(define-read-only (get-provider (provider principal))
+  (map-get? compute-providers { provider: provider })
+)
+
+(define-read-only (get-request (request-id uint))
+  (map-get? inference-requests { request-id: request-id })
+)
+
+(define-read-only (get-dispute (dispute-id uint))
+  (map-get? disputes { dispute-id: dispute-id })
+)
+
+(define-read-only (get-model-config (model-type (string-ascii 50)))
+  (map-get? model-types { model-type: model-type })
+)
+
+(define-read-only (get-rating (request-id uint) (rater principal))
+  (map-get? provider-ratings { request-id: request-id, rater: rater })
+)
+
+(define-read-only (get-total-providers)
+  (var-get total-providers)
+)
+
+(define-read-only (get-request-count)
+  (var-get request-count)
+)
+
+(define-read-only (get-dispute-count)
+  (var-get dispute-count)
+)
+
+(define-read-only (get-platform-stats)
+  {
+    total-providers: (var-get total-providers),
+    total-requests: (var-get request-count),
+    total-disputes: (var-get dispute-count),
+    platform-fee-rate: (var-get platform-fee-rate),
+    min-stake-amount: (var-get min-stake-amount)
+  }
+)
+
+(define-read-only (calculate-payment (model-type (string-ascii 50)) (compute-hours uint))
+  (let
+    (
+      (model-config (unwrap! (map-get? model-types { model-type: model-type }) ERR-INVALID-STATUS))
+      (base-payment (* compute-hours (get base-rate model-config)))
+      (complexity-fee (* base-payment (get complexity-multiplier model-config)))
+      (total-payment (+ base-payment complexity-fee))
+      (platform-fee (/ (* total-payment (var-get platform-fee-rate)) u100))
+    )
+    (ok {
+      base-payment: base-payment,
+      complexity-fee: complexity-fee,
+      platform-fee: platform-fee,
+      total-payment: total-payment,
+      provider-payment: (- total-payment platform-fee)
+    })
+  )
+)
