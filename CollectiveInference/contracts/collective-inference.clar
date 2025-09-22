@@ -188,3 +188,117 @@
     (ok true)
   )
 )
+
+;; Request inference computation with enhanced parameters
+(define-public (request-inference 
+  (model-type (string-ascii 50))
+  (compute-hours uint)
+  (preferred-provider (optional principal))
+  (max-rate uint))
+  (let
+    (
+      (request-id (+ (var-get request-count) u1))
+      (model-config (unwrap! (map-get? model-types { model-type: model-type }) ERR-INVALID-STATUS))
+      (base-payment (* compute-hours (get base-rate model-config)))
+      (complexity-fee (* base-payment (get complexity-multiplier model-config)))
+      (total-payment (+ base-payment complexity-fee))
+      (platform-fee (/ (* total-payment (var-get platform-fee-rate)) u100))
+      (provider-payment (- total-payment platform-fee))
+      (selected-provider (default-to CONTRACT-OWNER preferred-provider))
+    )
+    (asserts! (get enabled model-config) ERR-INVALID-STATUS)
+    (asserts! (<= total-payment max-rate) ERR-INSUFFICIENT-FUNDS)
+    (try! (stx-transfer? total-payment tx-sender (as-contract tx-sender)))
+    
+    (map-set inference-requests
+      { request-id: request-id }
+      {
+        client: tx-sender,
+        provider: selected-provider,
+        model-type: model-type,
+        compute-required: compute-hours,
+        payment: provider-payment,
+        status: "pending",
+        created-at: block-height,
+        completed-at: u0,
+        result-hash: none,
+        client-rating: none,
+        provider-rating: none
+      }
+    )
+    
+    (var-set request-count request-id)
+    (ok request-id)
+  )
+)
+
+;; Accept inference request with validation
+(define-public (accept-request (request-id uint))
+  (let
+    (
+      (request (unwrap! (map-get? inference-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
+      (provider (unwrap! (map-get? compute-providers { provider: tx-sender }) ERR-PROVIDER-NOT-FOUND))
+      (model-config (unwrap! (map-get? model-types { model-type: (get model-type request) }) ERR-INVALID-STATUS))
+      (last-activity (get last-activity provider))
+    )
+    (asserts! (get active provider) ERR-NOT-AUTHORIZED)
+    (asserts! (>= (get gpu-power provider) (get min-gpu-power model-config)) ERR-INSUFFICIENT-FUNDS)
+    (asserts! (is-eq (get status request) "pending") ERR-INVALID-STATUS)
+    (asserts! (> (get stake-amount provider) u0) ERR-STAKING-REQUIRED)
+    (asserts! (>= (+ last-activity (var-get cooldown-period)) block-height) ERR-COOLDOWN-ACTIVE)
+    
+    (map-set inference-requests
+      { request-id: request-id }
+      (merge request { status: "accepted", provider: tx-sender })
+    )
+    
+    ;; Update provider activity
+    (map-set compute-providers
+      { provider: tx-sender }
+      (merge provider { last-activity: block-height })
+    )
+    
+    (ok true)
+  )
+)
+
+;; Complete inference request with result verification
+(define-public (complete-request (request-id uint) (result-hash (buff 32)))
+  (let
+    (
+      (request (unwrap! (map-get? inference-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
+      (provider (unwrap! (map-get? compute-providers { provider: tx-sender }) ERR-PROVIDER-NOT-FOUND))
+      (payment (get payment request))
+    )
+    (asserts! (is-eq tx-sender (get provider request)) ERR-NOT-AUTHORIZED)
+    (asserts! (is-eq (get status request) "accepted") ERR-INVALID-STATUS)
+    
+    ;; Pay provider (85% immediately, 15% held for rating period)
+    (let ((immediate-payment (/ (* payment u85) u100)))
+      (try! (as-contract (stx-transfer? immediate-payment tx-sender (get provider request))))
+    )
+    
+    ;; Update request status
+    (map-set inference-requests
+      { request-id: request-id }
+      (merge request { 
+        status: "completed", 
+        completed-at: block-height,
+        result-hash: (some result-hash)
+      })
+    )
+    
+    ;; Update provider stats
+    (map-set compute-providers
+      { provider: tx-sender }
+      (merge provider {
+        total-earnings: (+ (get total-earnings provider) payment),
+        completed-jobs: (+ (get completed-jobs provider) u1),
+        reputation-score: (+ (get reputation-score provider) u5),
+        last-activity: block-height
+      })
+    )
+    
+    (ok true)
+  )
+)
