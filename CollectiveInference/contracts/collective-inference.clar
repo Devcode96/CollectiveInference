@@ -124,7 +124,7 @@
           active: true,
           specializations: specializations,
           stake-amount: (+ (get stake-amount (unwrap-panic existing-provider)) stake-amount),
-          last-activity: block-height
+          last-activity: stacks-block-height
         })
       )
       (begin
@@ -138,7 +138,7 @@
             completed-jobs: u0,
             reputation-score: u100,
             stake-amount: stake-amount,
-            last-activity: block-height,
+            last-activity: stacks-block-height,
             specializations: specializations,
             uptime-score: u100
           }
@@ -165,7 +165,7 @@
         gpu-power: gpu-power,
         hourly-rate: hourly-rate,
         specializations: specializations,
-        last-activity: block-height
+        last-activity: stacks-block-height
       })
     )
     (ok true)
@@ -219,7 +219,7 @@
         compute-required: compute-hours,
         payment: provider-payment,
         status: "pending",
-        created-at: block-height,
+        created-at: stacks-block-height,
         completed-at: u0,
         result-hash: none,
         client-rating: none,
@@ -245,7 +245,7 @@
     (asserts! (>= (get gpu-power provider) (get min-gpu-power model-config)) ERR-INSUFFICIENT-FUNDS)
     (asserts! (is-eq (get status request) "pending") ERR-INVALID-STATUS)
     (asserts! (> (get stake-amount provider) u0) ERR-STAKING-REQUIRED)
-    (asserts! (>= (+ last-activity (var-get cooldown-period)) block-height) ERR-COOLDOWN-ACTIVE)
+    (asserts! (>= (+ last-activity (var-get cooldown-period)) stacks-block-height) ERR-COOLDOWN-ACTIVE)
     
     (map-set inference-requests
       { request-id: request-id }
@@ -255,7 +255,7 @@
     ;; Update provider activity
     (map-set compute-providers
       { provider: tx-sender }
-      (merge provider { last-activity: block-height })
+      (merge provider { last-activity: stacks-block-height })
     )
     
     (ok true)
@@ -283,7 +283,7 @@
       { request-id: request-id }
       (merge request { 
         status: "completed", 
-        completed-at: block-height,
+        completed-at: stacks-block-height,
         result-hash: (some result-hash)
       })
     )
@@ -295,7 +295,7 @@
         total-earnings: (+ (get total-earnings provider) payment),
         completed-jobs: (+ (get completed-jobs provider) u1),
         reputation-score: (+ (get reputation-score provider) u5),
-        last-activity: block-height
+        last-activity: stacks-block-height
       })
     )
     
@@ -376,7 +376,7 @@
         disputed-against: disputed-against,
         reason: reason,
         status: "open",
-        created-at: block-height,
+        created-at: stacks-block-height,
         resolved-at: u0,
         resolution: none
       }
@@ -405,7 +405,7 @@
       { dispute-id: dispute-id }
       (merge dispute {
         status: "resolved",
-        resolved-at: block-height,
+        resolved-at: stacks-block-height,
         resolution: (some resolution)
       })
     )
@@ -456,7 +456,7 @@
       { provider: tx-sender }
       (merge provider { 
         active: (not (get active provider)),
-        last-activity: block-height
+        last-activity: stacks-block-height
       })
     )
     (ok (not (get active provider)))
@@ -471,7 +471,7 @@
       (cooldown-end (+ (get last-activity provider) (var-get cooldown-period)))
     )
     (asserts! (not (get active provider)) ERR-INVALID-STATUS)
-    (asserts! (>= block-height cooldown-end) ERR-COOLDOWN-ACTIVE)
+    (asserts! (>= stacks-block-height cooldown-end) ERR-COOLDOWN-ACTIVE)
     (asserts! (>= (get stake-amount provider) amount) ERR-INSUFFICIENT-FUNDS)
     
     (try! (as-contract (stx-transfer? amount tx-sender tx-sender)))
