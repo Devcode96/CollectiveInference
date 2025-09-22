@@ -302,3 +302,146 @@
     (ok true)
   )
 )
+
+;; Rate a completed request
+(define-public (rate-request 
+  (request-id uint) 
+  (rating uint) 
+  (comment (optional (string-ascii 100)))
+  (is-provider-rating bool))
+  (let
+    (
+      (request (unwrap! (map-get? inference-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
+      (existing-rating (map-get? provider-ratings { request-id: request-id, rater: tx-sender }))
+    )
+    (asserts! (is-eq (get status request) "completed") ERR-INVALID-STATUS)
+    (asserts! (<= rating u5) ERR-INVALID-RATING)
+    (asserts! (is-none existing-rating) ERR-ALREADY-RATED)
+    
+    (if is-provider-rating
+      (asserts! (is-eq tx-sender (get provider request)) ERR-NOT-AUTHORIZED)
+      (asserts! (is-eq tx-sender (get client request)) ERR-NOT-AUTHORIZED)
+    )
+    
+    ;; Store rating
+    (map-set provider-ratings
+      { request-id: request-id, rater: tx-sender }
+      { rating: rating, comment: comment }
+    )
+    
+    ;; Update request with rating
+    (if is-provider-rating
+      (map-set inference-requests
+        { request-id: request-id }
+        (merge request { provider-rating: (some rating) })
+      )
+      (map-set inference-requests
+        { request-id: request-id }
+        (merge request { client-rating: (some rating) })
+      )
+    )
+    
+    ;; Release remaining payment if both parties rated or after timeout
+    (if (and (is-some (get client-rating request)) (is-some (get provider-rating request)))
+      (let ((remaining-payment (/ (* (get payment request) u15) u100)))
+        (try! (as-contract (stx-transfer? remaining-payment tx-sender (get provider request))))
+        (ok true)
+      )
+      (ok true)
+    )
+  )
+)
+
+;; Create dispute for a request
+(define-public (create-dispute 
+  (request-id uint) 
+  (reason (string-ascii 200)))
+  (let
+    (
+      (request (unwrap! (map-get? inference-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
+      (dispute-id (+ (var-get dispute-count) u1))
+      (disputed-against (if (is-eq tx-sender (get client request))
+                          (get provider request)
+                          (get client request)))
+    )
+    (asserts! (or (is-eq tx-sender (get client request))
+                  (is-eq tx-sender (get provider request))) ERR-NOT-AUTHORIZED)
+    (asserts! (is-eq (get status request) "completed") ERR-INVALID-STATUS)
+    
+    (map-set disputes
+      { dispute-id: dispute-id }
+      {
+        request-id: request-id,
+        disputer: tx-sender,
+        disputed-against: disputed-against,
+        reason: reason,
+        status: "open",
+        created-at: block-height,
+        resolved-at: u0,
+        resolution: none
+      }
+    )
+    
+    (var-set dispute-count dispute-id)
+    (ok dispute-id)
+  )
+)
+
+;; Resolve dispute (contract owner only)
+(define-public (resolve-dispute 
+  (dispute-id uint) 
+  (resolution (string-ascii 200))
+  (favor-disputer bool))
+  (let
+    (
+      (dispute (unwrap! (map-get? disputes { dispute-id: dispute-id }) ERR-DISPUTE-NOT-FOUND))
+      (request (unwrap! (map-get? inference-requests { request-id: (get request-id dispute) }) ERR-REQUEST-NOT-FOUND))
+    )
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (asserts! (is-eq (get status dispute) "open") ERR-INVALID-STATUS)
+    
+    ;; Update dispute status
+    (map-set disputes
+      { dispute-id: dispute-id }
+      (merge dispute {
+        status: "resolved",
+        resolved-at: block-height,
+        resolution: (some resolution)
+      })
+    )
+    
+    ;; Handle resolution consequences
+    (if favor-disputer
+      ;; Favor disputer - penalize disputed party
+      (let ((disputed-provider (map-get? compute-providers { provider: (get disputed-against dispute) })))
+        (if (is-some disputed-provider)
+          (map-set compute-providers
+            { provider: (get disputed-against dispute) }
+            (merge (unwrap-panic disputed-provider) {
+              reputation-score: (if (> (get reputation-score (unwrap-panic disputed-provider)) u10)
+                                  (- (get reputation-score (unwrap-panic disputed-provider)) u10)
+                                  u0)
+            })
+          )
+          true
+        )
+      )
+      ;; Favor disputed party - penalize disputer
+      (let ((disputer-provider (map-get? compute-providers { provider: (get disputer dispute) })))
+        (if (is-some disputer-provider)
+          (map-set compute-providers
+            { provider: (get disputer dispute) }
+            (merge (unwrap-panic disputer-provider) {
+              reputation-score: (if (> (get reputation-score (unwrap-panic disputer-provider)) u5)
+                                  (- (get reputation-score (unwrap-panic disputer-provider)) u5)
+                                  u0)
+            })
+          )
+          true
+        )
+      )
+    )
+    
+    (ok true)
+  )
+)
